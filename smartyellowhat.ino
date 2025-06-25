@@ -4,25 +4,35 @@
 #include <SoftwareSerial.h>
 #include <Adafruit_NeoPixel.h>
 
-#include "esp_sleep.h"  // Deep sleep control (ESP32 only)
+#include "MAX30105.h"
+#include "heartRate.h"
+#include "esp_sleep.h"
 
-#define crashDetectionThreshold 2.4
+#define crashDetectionThreshold 1
 bool debugMode = true;
+const int GPSBaud = 9600;
+
+const byte RATE_SIZE = 4; //Increase this for more averaging. 4 is good.
+byte rates[RATE_SIZE]; //Array of heart rates
+byte rateSpot = 0;
+long lastBeat = 0; //Time at which the last beat occurred
+float beatsPerMinute;
+int beatAvg;
 
 #define SDA_PIN 21
 #define SCL_PIN 22
 #define BUZZER_PIN 4
+#define RXPin 16
+#define TXPin 17
 
 #define NEOPIXEL_PIN 5
-#define NEOPIXEL_NUM 1
-
-static const int RXPin = 16, TXPin = 17;
-static const uint32_t GPSBaud = 9600;
-
+#define NEOPIXEL_NUM 2
 
 MPU6050 mpu;
+MAX30105 particleSensor;
 TinyGPSPlus gps;
 Adafruit_NeoPixel pixels(NEOPIXEL_NUM, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+
 
 bool crashDetected = false;
 unsigned long crashTime = 0;
@@ -64,20 +74,44 @@ void setup() {
 
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);  // Ensure buzzer is off initially
-}
+  Serial.println("BUZZER: ON");
+
+  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
+    Serial.println("PULSESENSE: FAILED");
+    pixels.setPixelColor(0, pixels.Color(255, 0, 0));
+    pixels.setPixelColor(1, pixels.Color(0, 0, 255));
+    pixels.show();
+    while (1);
+  }
+  Serial.println("PULSESENSE: ON");
+  
+  particleSensor.setup(); //Configure sensor with default settings
+  particleSensor.setPulseAmplitudeRed(0x0A); //Turn Red LED to low to indicate sensor is running
+  particleSensor.setPulseAmplitudeGreen(0); //Turn off Green LED 
+  }
 
 void loop() {
-  pixels.clear(); // Turn all off
+
+  if (millis() > 30000) {
+    pixels.setPixelColor(0, pixels.Color(0, 0, 0));
+    pixels.setPixelColor(1, pixels.Color(0, 0, 0));
+    pixels.show();
+  } else {
+    pixels.setPixelColor(0, pixels.Color(255, 255, 0));
+    pixels.show();
+  }
 
   if (crashDetected) {
     if (millis() - crashTime < buzzerDuration) {
       while( true ) {
         digitalWrite(BUZZER_PIN, LOW);
         pixels.setPixelColor(0, pixels.Color(255, 0, 0));
+        pixels.setPixelColor(1, pixels.Color(0, 0, 0));
         pixels.show();
         delay(500);
         digitalWrite(BUZZER_PIN, HIGH);
         pixels.setPixelColor(0, pixels.Color(0, 0, 0));
+        pixels.setPixelColor(1, pixels.Color(0, 255, 0));
         pixels.show();
         delay(500);
       }
@@ -102,6 +136,7 @@ void loop() {
   float impact = abs(totalG - 1.0);  // Remove gravity offset
 
   if (debugMode) {
+    Serial.print(millis());
     Serial.printf("gF%.2f,", impact);
   }
 
@@ -114,6 +149,41 @@ void loop() {
   while (ss.available() > 0)
     if (gps.encode(ss.read()))
       displayInfo();
+
+  // Pulse Sensor //
+  long irValue = particleSensor.getIR();
+
+  if (checkForBeat(irValue) == true)
+  {
+    //We sensed a beat!
+    long delta = millis() - lastBeat;
+    lastBeat = millis();
+    
+    beatsPerMinute = 60 / (delta / 1000.0);
+
+    if (beatsPerMinute < 255 && beatsPerMinute > 20)
+    {
+      rates[rateSpot++] = (byte)beatsPerMinute; //Store this reading in the array
+      rateSpot %= RATE_SIZE; //Wrap variable
+      
+      //Take average of readings
+      beatAvg = 0;
+      for (byte x = 0 ; x < RATE_SIZE ; x++)
+      beatAvg += rates[x];
+      beatAvg /= RATE_SIZE;
+    }
+  }
+
+  if (debugMode) {
+    Serial.print("ir");
+    Serial.print(irValue);
+    Serial.print(", bpm");
+    Serial.print(beatsPerMinute);
+    Serial.print(", avgbpm");
+    Serial.print(beatAvg);
+  if (irValue < 50000)
+    Serial.print(",noBPM");
+  }
 
   Serial.println();
   delay(100);
@@ -128,6 +198,8 @@ void displayInfo() {
     Serial.print(F(","));
   } else {
     Serial.print(F("noLatLong,"));
+    pixels.setPixelColor(0, pixels.Color(255, 92, 0));
+    pixels.show();
   }
 
   if (gps.date.isValid()) {
@@ -166,9 +238,6 @@ void displayInfo() {
   } else {
     Serial.print("noSatC");
   }
-
-  pixels.setPixelColor(0, pixels.Color(255, 255, 0)); // Green
-  pixels.show();
 
   Serial.println();
   }
