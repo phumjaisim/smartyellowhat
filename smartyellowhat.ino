@@ -3,12 +3,15 @@
 #include <TinyGPSPlus.h>
 #include <SoftwareSerial.h>
 #include <Adafruit_NeoPixel.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <PubSubClient.h>
 
 #include "MAX30105.h"
 #include "heartRate.h"
 #include "esp_sleep.h"
 
-#define crashDetectionThreshold 1
+#define crashDetectionThreshold 2 //G
 bool debugMode = true;
 const int GPSBaud = 9600;
 
@@ -28,10 +31,25 @@ int beatAvg;
 #define NEOPIXEL_PIN 5
 #define NEOPIXEL_NUM 2
 
+const char* ssid = "Nothing Phone (2a)_5714";
+const char* password = "45674567";
+
+const char* mqtt_server = "30dfaa13bf1c48e6a0e01501aab4c5ec.s1.eu.hivemq.cloud"; // Public HiveMQ broker
+const int mqtt_port = 8883;
+const char* mqtt_gforce = "gforce";
+const char* mqtt_bpm = "bpm"
+const char* mqtt_username = "hivemq.webclient.1750909080438";
+const char* mqtt_password = "ZwS&jE0!*2qyRkgG81F.";
+
 MPU6050 mpu;
 MAX30105 particleSensor;
 TinyGPSPlus gps;
 Adafruit_NeoPixel pixels(NEOPIXEL_NUM, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+
+#include <WiFiClientSecure.h>
+
+WiFiClientSecure secureClient;
+PubSubClient client(secureClient);
 
 
 bool crashDetected = false;
@@ -42,6 +60,9 @@ SoftwareSerial ss(RXPin, TXPin);
 
 void setup() {
   Serial.begin(115200);
+
+  setupWiFi();
+  client.setServer(mqtt_server, mqtt_port);
 
 
   // Wake-up log
@@ -91,6 +112,11 @@ void setup() {
   }
 
 void loop() {
+
+  if (!client.connected()) {
+  reconnectMQTT();
+  }
+  client.loop();
 
   if (millis() > 30000) {
     pixels.setPixelColor(0, pixels.Color(0, 0, 0));
@@ -145,7 +171,7 @@ void loop() {
     crashDetected = true;
     crashTime = millis();
   }
-
+  
   while (ss.available() > 0)
     if (gps.encode(ss.read()))
       displayInfo();
@@ -185,6 +211,10 @@ void loop() {
     Serial.print(",noBPM");
   }
 
+  char payload[32];
+  dtostrf(impact, 6, 2, payload);  // Convert float to char array
+  client.publish(mqtt_gforce, payload);
+  
   Serial.println();
   delay(100);
 }
@@ -196,6 +226,7 @@ void displayInfo() {
     Serial.print(F(","));
     Serial.print(gps.location.lng(), 6);
     Serial.print(F(","));
+
   } else {
     Serial.print(F("noLatLong,"));
     pixels.setPixelColor(0, pixels.Color(255, 92, 0));
@@ -248,4 +279,30 @@ void goToSleep() {
   Serial.println("Entering deep sleep for 30 minutes...");
   esp_sleep_enable_timer_wakeup(30ULL * 60ULL * 1000000ULL);  // 30 minutes in microseconds
   esp_deep_sleep_start();
+}
+
+void setupWiFi() {
+  delay(10);
+  Serial.println("Connecting to WiFi...");
+  secureClient.setInsecure(); // Use this ONLY for testing; remove in production
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("WiFi connected");
+}
+
+void reconnectMQTT() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    if (client.connect("ESP32Client", mqtt_username, mqtt_password)) {
+      Serial.println("connected");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      delay(5000);
+    }
+  }
 }
