@@ -24,6 +24,13 @@ const int GPSBaud = 9600;
 #define NEOPIXEL_PIN 5
 #define NEOPIXEL_NUM 2
 
+const byte RATE_SIZE = 4; // Change this for averaging window
+byte rates[RATE_SIZE];    // Array of heart rates
+byte rateSpot = 0;
+long lastBeat = 0;
+float beatsPerMinute;
+int beatAvg;
+
 const char* ssid = "Nothing Phone (2a)_5714";
 const char* password = "45674567";
 
@@ -85,6 +92,16 @@ void setup() {
   pixels.begin();
   Serial.println("NEOPIXEL: ON");
   pixels.clear();
+
+  if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
+  Serial.println("MAX30105 not found. Check wiring/power.");
+  while (1);
+  }
+  
+  particleSensor.setup(); // Configure sensor with default settings
+  particleSensor.setPulseAmplitudeRed(0x0A); // Turn Red LED to low to indicate sensor is running
+  particleSensor.setPulseAmplitudeGreen(0);  // Turn off Green LED
+  Serial.println("MAX30105: ON");
 
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);  // Ensure buzzer is off initially
@@ -164,6 +181,41 @@ void loop() {
   dtostrf(beatsPerMinute, 4, 1, bpmPayload);  // Convert float BPM to string
   client.publish(mqtt_bpm, bpmPayload);*/
 
+  long irValue = particleSensor.getIR();
+
+// Try to detect a beat, even if IR is low
+if (checkForBeat(irValue)) {
+  long delta = millis() - lastBeat;
+  lastBeat = millis();
+
+  beatsPerMinute = 60 / (delta / 1000.0);
+
+  if (beatsPerMinute < 255 && beatsPerMinute > 20) {
+    rates[rateSpot++] = (byte)beatsPerMinute;
+    rateSpot %= RATE_SIZE;
+
+    beatAvg = 0;
+    for (byte x = 0; x < RATE_SIZE; x++) beatAvg += rates[x];
+    beatAvg /= RATE_SIZE;
+  }
+}
+
+// Print every loop regardless of detection
+if (debugMode) {
+  Serial.print("IR=");
+  Serial.print(irValue);
+  Serial.print(", BPM=");
+  Serial.print(beatsPerMinute);
+  Serial.print(", Avg BPM=");
+  Serial.println(beatAvg);
+}
+
+// Publish BPM to MQTT
+char bpmPayload[8];
+dtostrf(beatAvg, 4, 1, bpmPayload);
+client.publish(mqtt_bpm, bpmPayload);
+
+
   Serial.println();
   delay(100);
 }
@@ -188,6 +240,8 @@ void displayInfo() {
     Serial.print(F("noLatLong,"));
     pixels.setPixelColor(0, pixels.Color(255, 92, 0));
     pixels.show();
+    client.publish("lat", 0);
+    client.publish("long", 0);
   }
 
    if (gps.date.isValid()) {
