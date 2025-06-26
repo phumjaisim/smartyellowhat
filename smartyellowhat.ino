@@ -15,13 +15,6 @@
 bool debugMode = true;
 const int GPSBaud = 9600;
 
-const byte RATE_SIZE = 4; //Increase this for more averaging. 4 is good.
-byte rates[RATE_SIZE]; //Array of heart rates
-byte rateSpot = 0;
-long lastBeat = 0; //Time at which the last beat occurred
-float beatsPerMinute;
-int beatAvg;
-
 #define SDA_PIN 21
 #define SCL_PIN 22
 #define BUZZER_PIN 4
@@ -37,7 +30,7 @@ const char* password = "45674567";
 const char* mqtt_server = "30dfaa13bf1c48e6a0e01501aab4c5ec.s1.eu.hivemq.cloud"; // Public HiveMQ broker
 const int mqtt_port = 8883;
 const char* mqtt_gforce = "gforce";
-const char* mqtt_bpm = "bpm"
+const char* mqtt_bpm = "bpm";
 const char* mqtt_username = "hivemq.webclient.1750909080438";
 const char* mqtt_password = "ZwS&jE0!*2qyRkgG81F.";
 
@@ -95,20 +88,7 @@ void setup() {
 
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);  // Ensure buzzer is off initially
-  Serial.println("BUZZER: ON");
-
-  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
-    Serial.println("PULSESENSE: FAILED");
-    pixels.setPixelColor(0, pixels.Color(255, 0, 0));
-    pixels.setPixelColor(1, pixels.Color(0, 0, 255));
-    pixels.show();
-    while (1);
-  }
-  Serial.println("PULSESENSE: ON");
-  
-  particleSensor.setup(); //Configure sensor with default settings
-  particleSensor.setPulseAmplitudeRed(0x0A); //Turn Red LED to low to indicate sensor is running
-  particleSensor.setPulseAmplitudeGreen(0); //Turn off Green LED 
+  Serial.println("BUZZER: ON");  
   }
 
 void loop() {
@@ -176,45 +156,14 @@ void loop() {
     if (gps.encode(ss.read()))
       displayInfo();
 
-  // Pulse Sensor //
-  long irValue = particleSensor.getIR();
-
-  if (checkForBeat(irValue) == true)
-  {
-    //We sensed a beat!
-    long delta = millis() - lastBeat;
-    lastBeat = millis();
-    
-    beatsPerMinute = 60 / (delta / 1000.0);
-
-    if (beatsPerMinute < 255 && beatsPerMinute > 20)
-    {
-      rates[rateSpot++] = (byte)beatsPerMinute; //Store this reading in the array
-      rateSpot %= RATE_SIZE; //Wrap variable
-      
-      //Take average of readings
-      beatAvg = 0;
-      for (byte x = 0 ; x < RATE_SIZE ; x++)
-      beatAvg += rates[x];
-      beatAvg /= RATE_SIZE;
-    }
-  }
-
-  if (debugMode) {
-    Serial.print("ir");
-    Serial.print(irValue);
-    Serial.print(", bpm");
-    Serial.print(beatsPerMinute);
-    Serial.print(", avgbpm");
-    Serial.print(beatAvg);
-  if (irValue < 50000)
-    Serial.print(",noBPM");
-  }
-
   char payload[32];
   dtostrf(impact, 6, 2, payload);  // Convert float to char array
   client.publish(mqtt_gforce, payload);
-  
+
+  /*char bpmPayload[8];
+  dtostrf(beatsPerMinute, 4, 1, bpmPayload);  // Convert float BPM to string
+  client.publish(mqtt_bpm, bpmPayload);*/
+
   Serial.println();
   delay(100);
 }
@@ -227,36 +176,48 @@ void displayInfo() {
     Serial.print(gps.location.lng(), 6);
     Serial.print(F(","));
 
+    char latBuffer[16];
+    char lngBuffer[16];
+    dtostrf(gps.location.lat(), 9, 6, latBuffer);
+    dtostrf(gps.location.lng(), 9, 6, lngBuffer);
+  
+    client.publish("lat", latBuffer);
+    client.publish("long", lngBuffer);
+  
   } else {
     Serial.print(F("noLatLong,"));
     pixels.setPixelColor(0, pixels.Color(255, 92, 0));
     pixels.show();
   }
 
-  if (gps.date.isValid()) {
-    if (gps.date.day() < 10) Serial.print('0');
-    Serial.print(gps.date.day());
-    if (gps.date.month() < 10) Serial.print('0');
-    Serial.print(gps.date.month());
-    Serial.print(gps.date.year() % 100);
-    Serial.print(F(","));
-  } else {
-    Serial.print(F("noDDMMYY,"));
-  }
+   if (gps.date.isValid()) {
+      char dateBuffer[9];  // DD/MM/YY + null terminator
+      snprintf(dateBuffer, sizeof(dateBuffer), "%02d/%02d/%02d",
+               gps.date.day(),
+               gps.date.month(),
+               gps.date.year() % 100);
+      Serial.print(dateBuffer);
+      Serial.print(F(","));
+      client.publish("date", dateBuffer);
+    } else {
+      Serial.print(F("noDDMMYY,"));
+    }
 
-  if (gps.time.isValid()) {
-    int hour = gps.time.hour() + 7;
-    int minute = gps.time.minute();
-    int second = gps.time.second();
-    if (hour >= 24) hour -= 24;
-    if (hour < 10) Serial.print('0');
-    Serial.print(hour);
-    Serial.print(minute);
-    Serial.print(second);
-    Serial.print(F(","));
-  } else {
-    Serial.print(F("noHHMMSS,"));
-  }
+    // Publish time to MQTT in HH:MM:SS format
+    if (gps.time.isValid()) {
+      int hour = gps.time.hour() + 7;  // timezone adjustment
+      if (hour >= 24) hour -= 24;
+      char timeBuffer[9];  // HH:MM:SS + null terminator
+      snprintf(timeBuffer, sizeof(timeBuffer), "%02d:%02d:%02d",
+               hour,
+               gps.time.minute(),
+               gps.time.second());
+      Serial.print(timeBuffer);
+      Serial.print(F(","));
+      client.publish("time", timeBuffer);
+    } else {
+      Serial.print(F("noHHMMSS,"));
+    }
 
   if (gps.altitude.isValid()) {
     Serial.print(gps.altitude.meters());
