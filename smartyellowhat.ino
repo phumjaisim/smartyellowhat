@@ -14,15 +14,21 @@
 #define crashDetectionThreshold 2 //G
 bool debugMode = true;
 const int GPSBaud = 9600;
+const char* hatID = "HAT-001";
 
 #define SDA_PIN 21
 #define SCL_PIN 22
 #define BUZZER_PIN 4
 #define RXPin 16
 #define TXPin 17
+#define BUTTON_PIN 33
 
 #define NEOPIXEL_PIN 5
 #define NEOPIXEL_NUM 2
+
+bool crashDetected = false;
+unsigned long crashTime = 0;
+const unsigned long buzzerDuration = 2 * 60 * 1000UL;  // 2 minutes in milliseconds
 
 const byte RATE_SIZE = 4; // Change this for averaging window
 byte rates[RATE_SIZE];    // Array of heart rates
@@ -52,9 +58,6 @@ WiFiClientSecure secureClient;
 PubSubClient client(secureClient);
 
 
-bool crashDetected = false;
-unsigned long crashTime = 0;
-const unsigned long buzzerDuration = 2 * 60 * 1000UL;  // 2 minutes in milliseconds
 
 SoftwareSerial ss(RXPin, TXPin);
 
@@ -106,6 +109,11 @@ void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);  // Ensure buzzer is off initially
   Serial.println("BUZZER: ON");  
+
+  pinMode(BUTTON_PIN, INPUT_PULLUP);  // Use internal pull-up resistor
+
+  client.setCallback(mqttCallback);
+
   }
 
 void loop() {
@@ -215,6 +223,12 @@ char bpmPayload[8];
 dtostrf(beatAvg, 4, 1, bpmPayload);
 client.publish(mqtt_bpm, bpmPayload);
 
+if (digitalRead(BUTTON_PIN) == LOW) {  // Active LOW
+  Serial.println("Physical SOS Button Triggered!");
+  client.publish("sosbtn", "1");
+  crashDetected = true;
+  crashTime = millis();
+}
 
   Serial.println();
   delay(100);
@@ -313,11 +327,33 @@ void reconnectMQTT() {
     Serial.print("Attempting MQTT connection...");
     if (client.connect("ESP32Client", mqtt_username, mqtt_password)) {
       Serial.println("connected");
+      client.subscribe("sosbtn");
+
+      // Publish hat ID to "hatid"
+      client.publish("hatid", hatID); 
+      Serial.println("Published hat ID to topic 'hatid'");
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
       Serial.println(" try again in 5 seconds");
       delay(5000);
+    }
+  }
+}
+
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String msg;
+  for (unsigned int i = 0; i < length; i++) {
+    msg += (char)payload[i];
+  }
+
+  if (String(topic) == "sosbtn") {
+    msg.trim();  // Remove any whitespace or newline characters
+    if (msg == "1" || msg.equalsIgnoreCase("true")) {
+      Serial.println("MQTT SOS Button Pressed!");
+      crashDetected = true;
+      crashTime = millis();
     }
   }
 }
