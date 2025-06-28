@@ -11,7 +11,7 @@
 #include "heartRate.h"
 #include "esp_sleep.h"
 
-#define crashDetectionThreshold 1.75 //G
+#define crashDetectionThreshold 2 //G
 bool debugMode = true;
 const int GPSBaud = 9600;
 const char* hatID = "HAT-001";
@@ -30,9 +30,6 @@ bool crashDetected = false;
 unsigned long crashTime = 0;
 const unsigned long buzzerDuration = 2 * 60 * 1000UL;  // 2 minutes in milliseconds
 
-unsigned long lastRandomBpmTime = 0;
-const unsigned long bpmInterval = 3000;  // 3 seconds in milliseconds
-
 const byte RATE_SIZE = 4; // Change this for averaging window
 byte rates[RATE_SIZE];    // Array of heart rates
 byte rateSpot = 0;
@@ -47,8 +44,8 @@ const char* mqtt_server = "30dfaa13bf1c48e6a0e01501aab4c5ec.s1.eu.hivemq.cloud";
 const int mqtt_port = 8883;
 const char* mqtt_gforce = "gforce";
 const char* mqtt_bpm = "bpm";
-const char* mqtt_username = "nodered";
-const char* mqtt_password = "Nodered1";
+const char* mqtt_username = "hivemq.webclient.1750909080438";
+const char* mqtt_password = "ZwS&jE0!*2qyRkgG81F.";
 
 MPU6050 mpu;
 MAX30105 particleSensor;
@@ -59,6 +56,8 @@ Adafruit_NeoPixel pixels(NEOPIXEL_NUM, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
 
 WiFiClientSecure secureClient;
 PubSubClient client(secureClient);
+
+
 
 SoftwareSerial ss(RXPin, TXPin);
 
@@ -182,13 +181,9 @@ void loop() {
     if (gps.encode(ss.read()))
       displayInfo();
 
-  char gforcepayload[32];
-  dtostrf(impact, 6, 2, gforcepayload);  // Convert float to char array
-  client.publish(mqtt_gforce, gforcepayload);
-
-  char accelPayload[16];
-  dtostrf(impact*9.80665, 6, 2, accelPayload);
-  client.publish("accel", accelPayload);
+  char payload[32];
+  dtostrf(impact, 6, 2, payload);  // Convert float to char array
+  client.publish(mqtt_gforce, payload);
 
   long irValue = particleSensor.getIR();
 
@@ -209,20 +204,10 @@ if (checkForBeat(irValue)) {
   }
 }
 
-if (millis() - lastRandomBpmTime >= bpmInterval) {
-  lastRandomBpmTime = millis();  // Reset timer
-
-  // Generate and publish random BPM between 75-85
-  int randomBPM = random(96, 101);  // upper bound is exclusive
-  char bpmStr[8];
-  dtostrf(randomBPM, 4, 1, bpmStr);
-  client.publish(mqtt_bpm, bpmStr);
-
-  if (debugMode) {
-    Serial.print("Published random BPM: ");
-    Serial.println(bpmStr);
-  }
-}
+    // Convert BPM to string and publish to MQTT
+    char bpmStr[8];
+    dtostrf(beatsPerMinute, 4, 1, bpmStr);
+    client.publish(mqtt_bpm, bpmStr);
 
 
 // Print every loop regardless of detection
@@ -241,6 +226,7 @@ if (digitalRead(BUTTON_PIN) == LOW) {  // Active LOW
   crashDetected = true;
   crashTime = millis();
 }
+
   Serial.println();
   delay(100);
 }
@@ -282,10 +268,11 @@ void displayInfo() {
       Serial.print(F("noDDMMYY,"));
     }
 
+    // Publish time to MQTT in HH:MM:SS format
     if (gps.time.isValid()) {
-      int hour = gps.time.hour() + 7;
+      int hour = gps.time.hour() + 7;  // timezone adjustment
       if (hour >= 24) hour -= 24;
-      char timeBuffer[9];
+      char timeBuffer[9];  // HH:MM:SS + null terminator
       snprintf(timeBuffer, sizeof(timeBuffer), "%02d:%02d:%02d",
                hour,
                gps.time.minute(),
@@ -314,7 +301,7 @@ void displayInfo() {
 }
 
 void goToSleep() {
-  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(BUZZER_PIN, LOW);  // Ensure buzzer is off
   Serial.println("Entering deep sleep for 30 minutes...");
   esp_sleep_enable_timer_wakeup(30ULL * 60ULL * 1000000ULL);  // 30 minutes in microseconds
   esp_deep_sleep_start();
@@ -365,12 +352,5 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       crashDetected = true;
       crashTime = millis();
     }
-  }
-}
-
-void onButtonHeld() {
-  if (crashDetected) {
-    Serial.println("Button held: crash reset");
-    crashDetected = false;
   }
 }
