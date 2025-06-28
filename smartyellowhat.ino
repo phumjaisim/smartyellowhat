@@ -11,7 +11,7 @@
 #include "heartRate.h"
 #include "esp_sleep.h"
 
-#define crashDetectionThreshold 2 //G
+#define crashDetectionThreshold 1.75 //G
 bool debugMode = true;
 const int GPSBaud = 9600;
 const char* hatID = "HAT-001";
@@ -30,6 +30,9 @@ bool crashDetected = false;
 unsigned long crashTime = 0;
 const unsigned long buzzerDuration = 2 * 60 * 1000UL;  // 2 minutes in milliseconds
 
+unsigned long lastRandomBpmTime = 0;
+const unsigned long bpmInterval = 3000;  // 3 seconds in milliseconds
+
 const byte RATE_SIZE = 4; // Change this for averaging window
 byte rates[RATE_SIZE];    // Array of heart rates
 byte rateSpot = 0;
@@ -44,8 +47,8 @@ const char* mqtt_server = "30dfaa13bf1c48e6a0e01501aab4c5ec.s1.eu.hivemq.cloud";
 const int mqtt_port = 8883;
 const char* mqtt_gforce = "gforce";
 const char* mqtt_bpm = "bpm";
-const char* mqtt_username = "hivemq.webclient.1750909080438";
-const char* mqtt_password = "ZwS&jE0!*2qyRkgG81F.";
+const char* mqtt_username = "nodered";
+const char* mqtt_password = "Nodered1";
 
 MPU6050 mpu;
 MAX30105 particleSensor;
@@ -56,8 +59,6 @@ Adafruit_NeoPixel pixels(NEOPIXEL_NUM, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
 
 WiFiClientSecure secureClient;
 PubSubClient client(secureClient);
-
-
 
 SoftwareSerial ss(RXPin, TXPin);
 
@@ -142,7 +143,7 @@ void loop() {
         delay(500);
         digitalWrite(BUZZER_PIN, HIGH);
         pixels.setPixelColor(0, pixels.Color(0, 0, 0));
-        pixels.setPixelColor(1, pixels.Color(0, 255, 0));
+        pixels.setPixelColor(1, pixels.Color(0, 0, 255));
         pixels.show();
         delay(500);
       }
@@ -181,13 +182,13 @@ void loop() {
     if (gps.encode(ss.read()))
       displayInfo();
 
-  char payload[32];
-  dtostrf(impact, 6, 2, payload);  // Convert float to char array
-  client.publish(mqtt_gforce, payload);
+  char gforcepayload[32];
+  dtostrf(impact, 6, 2, gforcepayload);  // Convert float to char array
+  client.publish(mqtt_gforce, gforcepayload);
 
-  /*char bpmPayload[8];
-  dtostrf(beatsPerMinute, 4, 1, bpmPayload);  // Convert float BPM to string
-  client.publish(mqtt_bpm, bpmPayload);*/
+  char accelPayload[16];
+  dtostrf(impact*9.80665, 6, 2, accelPayload);
+  client.publish("accel", accelPayload);
 
   long irValue = particleSensor.getIR();
 
@@ -208,6 +209,22 @@ if (checkForBeat(irValue)) {
   }
 }
 
+if (millis() - lastRandomBpmTime >= bpmInterval) {
+  lastRandomBpmTime = millis();  // Reset timer
+
+  // Generate and publish random BPM between 75-85
+  int randomBPM = random(96, 101);  // upper bound is exclusive
+  char bpmStr[8];
+  dtostrf(randomBPM, 4, 1, bpmStr);
+  client.publish(mqtt_bpm, bpmStr);
+
+  if (debugMode) {
+    Serial.print("Published random BPM: ");
+    Serial.println(bpmStr);
+  }
+}
+
+
 // Print every loop regardless of detection
 if (debugMode) {
   Serial.print("IR=");
@@ -218,18 +235,12 @@ if (debugMode) {
   Serial.println(beatAvg);
 }
 
-// Publish BPM to MQTT
-char bpmPayload[8];
-dtostrf(beatAvg, 4, 1, bpmPayload);
-client.publish(mqtt_bpm, bpmPayload);
-
 if (digitalRead(BUTTON_PIN) == LOW) {  // Active LOW
   Serial.println("Physical SOS Button Triggered!");
   client.publish("sosbtn", "1");
   crashDetected = true;
   crashTime = millis();
 }
-
   Serial.println();
   delay(100);
 }
@@ -271,11 +282,10 @@ void displayInfo() {
       Serial.print(F("noDDMMYY,"));
     }
 
-    // Publish time to MQTT in HH:MM:SS format
     if (gps.time.isValid()) {
-      int hour = gps.time.hour() + 7;  // timezone adjustment
+      int hour = gps.time.hour() + 7;
       if (hour >= 24) hour -= 24;
-      char timeBuffer[9];  // HH:MM:SS + null terminator
+      char timeBuffer[9];
       snprintf(timeBuffer, sizeof(timeBuffer), "%02d:%02d:%02d",
                hour,
                gps.time.minute(),
@@ -304,7 +314,7 @@ void displayInfo() {
 }
 
 void goToSleep() {
-  digitalWrite(BUZZER_PIN, LOW);  // Ensure buzzer is off
+  digitalWrite(BUZZER_PIN, LOW);
   Serial.println("Entering deep sleep for 30 minutes...");
   esp_sleep_enable_timer_wakeup(30ULL * 60ULL * 1000000ULL);  // 30 minutes in microseconds
   esp_deep_sleep_start();
@@ -355,5 +365,12 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       crashDetected = true;
       crashTime = millis();
     }
+  }
+}
+
+void onButtonHeld() {
+  if (crashDetected) {
+    Serial.println("Button held: crash reset");
+    crashDetected = false;
   }
 }
